@@ -22,36 +22,49 @@ def git(cwd, *args, input=None, check=True):
     return result
 
 
+def worktree_records(cwd):
+    listing = git(cwd, "worktree", "list", "--porcelain", "-z").stdout
+    records = []
+    for block in listing.split("\0\0"):
+        fields = dict(part.partition(" ")[::2] for part in block.split("\0") if part)
+        if fields:
+            records.append(fields)
+    return records
+
+
 class Store:
-    def __init__(self, cwd):
+    def __init__(self, cwd, branch=BRANCH, mount_path=DIRECTORY):
         # Git lists the primary worktree first; use its registered path rather
         # than assuming a .git directory is located inside the source checkout.
-        listing = git(cwd, "worktree", "list", "--porcelain", "-z").stdout
-        records = []
-        for block in listing.split("\0\0"):
-            fields = dict(part.partition(" ")[::2] for part in block.split("\0") if part)
-            if fields:
-                records.append(fields)
+        records = worktree_records(cwd)
         if not records or "bare" in records[0]:
             raise StoreError("a non-bare primary worktree is required")
         self.root = Path(records[0]["worktree"]).resolve()
-        self.path = self.root / DIRECTORY
-        self.worktrees = records
+        if (not isinstance(branch, str) or branch.startswith("-")
+                or git(self.root, "check-ref-format", "refs/heads/" + branch, check=False).returncode):
+            raise StoreError("invalid branch name")
+        if (not isinstance(mount_path, str) or not re.fullmatch(r"[\w.-]+", mount_path)
+                or mount_path in (".", "..", ".git")):
+            raise StoreError("mount path must be a single directory name under the primary worktree")
+        self.branch = branch
+        self.ref = "refs/heads/" + branch
+        self.directory = mount_path
+        self.path = self.root / mount_path
 
     def mounted(self):
         if self.path.is_symlink():
             raise StoreError("mount path must not be a symlink")
-        for record in self.worktrees:
+        for record in worktree_records(self.root):
             if Path(record["worktree"]).resolve() == self.path:
-                if record.get("branch") != REF:
-                    raise StoreError("mount must be on docs/store; resolve the branch change manually")
+                if record.get("branch") != self.ref:
+                    raise StoreError(f"mount must be on {self.branch}; resolve the branch change manually")
                 if "locked" in record:
                     raise StoreError("document worktree is locked")
                 if not self.path.is_dir():
                     raise StoreError("registered document worktree is missing")
                 return True
         if os.path.lexists(self.path):
-            raise StoreError("mount path already exists and is not the registered docs/store worktree")
+            raise StoreError("mount path already exists and is not the registered document worktree")
         return False
 
     def require_mount(self):
@@ -79,12 +92,12 @@ class Store:
     def fetch(self):
         if not self.has_remote():
             raise StoreError("origin is not configured")
-        git(self.root, "fetch", "--no-tags", "origin", f"{REF}:refs/remotes/origin/{BRANCH}")
+        git(self.root, "fetch", "--no-tags", "origin", f"{self.ref}:refs/remotes/origin/{self.branch}")
 
     def mount(self):
         if self.mounted():
             return self.status()
-        if git(self.root, "ls-files", "--", DIRECTORY).stdout:
+        if git(self.root, "ls-files", "--", f":(literal){self.directory}").stdout:
             raise StoreError("source index already tracks the mount path")
         # A local exclusion keeps product commits unchanged and is shared by
         # linked worktrees. Never edit or stage the source .gitignore.
@@ -94,31 +107,39 @@ class Store:
             raise StoreError("info/exclude must not be a symlink")
         exclude.parent.mkdir(parents=True, exist_ok=True)
         content = exclude.read_text() if exclude.exists() else ""
-        line = "/" + DIRECTORY + "/"
+        line = "/" + self.directory + "/"
         if line not in content.splitlines():
             with exclude.open("a") as output:
                 output.write(("\n" if content and not content.endswith("\n") else "") + line + "\n")
-        if git(self.root, "show-ref", "--verify", "--quiet", REF, check=False).returncode:
+        if git(self.root, "show-ref", "--verify", "--quiet", self.ref, check=False).returncode:
             adopted = False
             if self.has_remote():
-                remote = git(self.root, "ls-remote", "--exit-code", "origin", REF, check=False)
+                remote = git(self.root, "ls-remote", "--exit-code", "origin", self.ref, check=False)
                 if remote.returncode == 0:
                     self.fetch()
-                    git(self.root, "branch", BRANCH, f"refs/remotes/origin/{BRANCH}")
+                    git(self.root, "branch", self.branch, f"refs/remotes/origin/{self.branch}")
                     adopted = True
                 elif remote.returncode != 2:
                     raise StoreError(remote.stderr.strip() or "unable to inspect origin; no branch created")
             if not adopted:
                 tree = git(self.root, "mktree", input="").stdout.strip()
-                commit = git(self.root, "commit-tree", tree, "-m", "Initialize independent document history").stdout.strip()
+                commit = git(self.root, "commit-tree", tree, "-m",
+                             f"Initialize independent document history: {self.branch}").stdout.strip()
                 # Compare-and-set protects an existing branch from replacement.
-                git(self.root, "update-ref", REF, commit, "0" * len(commit))
-        git(self.root, "worktree", "add", str(self.path), BRANCH)
-        return Store(self.root).status()
+                git(self.root, "update-ref", self.ref, commit, "0" * len(commit))
+        source = git(self.root, "rev-parse", "--verify", "HEAD", check=False)
+        if source.returncode == 0:
+            common = git(self.root, "merge-base", "HEAD", self.ref, check=False)
+            if common.returncode == 0:
+                raise StoreError("document branch shares source history; choose an independent orphan branch")
+            if common.returncode != 1:
+                raise StoreError(common.stderr.strip() or "unable to check branch isolation")
+        git(self.root, "worktree", "add", str(self.path), self.branch)
+        return Store(self.root, self.branch, self.directory).status()
 
     def status(self):
         mounted = self.mounted()
-        result = {"root": str(self.root), "path": str(self.path), "branch": BRANCH,
+        result = {"root": str(self.root), "path": str(self.path), "branch": self.branch,
                   "mounted": mounted, "has_origin": self.has_remote()}
         if mounted:
             result.update(commit=git(self.path, "rev-parse", "HEAD").stdout.strip(),
@@ -128,7 +149,7 @@ class Store:
     def unmount(self):
         self.require_clean()
         git(self.root, "worktree", "remove", str(self.path))
-        return {"mounted": False, "branch_preserved": BRANCH}
+        return {"mounted": False, "branch_preserved": self.branch}
 
     def commit(self, message):
         self.require_mount()
@@ -144,14 +165,14 @@ class Store:
     def sync(self):
         self.require_clean()
         self.fetch()
-        git(self.path, "merge", "--ff-only", f"refs/remotes/origin/{BRANCH}")
+        git(self.path, "merge", "--ff-only", f"refs/remotes/origin/{self.branch}")
         return self.status()
 
     def push(self):
         self.require_clean()
         if not self.has_remote():
             raise StoreError("origin is not configured")
-        git(self.path, "push", "origin", f"{REF}:{REF}")
+        git(self.path, "push", "origin", f"{self.ref}:{self.ref}")
         return self.status()
 
     @staticmethod

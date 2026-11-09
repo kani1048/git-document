@@ -206,6 +206,58 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "first\n")
 
+    def test_multiple_orphan_stores_are_independent(self):
+        self.store().mount()
+        default_ref = self.add_document()
+        custom = Store(self.repo, "docs/decisions", ".decisions")
+        custom.mount()
+        (custom.path / "choice.md").write_text("decision")
+        custom.commit("record decision")
+        self.assertEqual(custom.status()["branch"], "docs/decisions")
+        self.assertEqual(self.store().status()["commit"], default_ref["commit"])
+        self.assertFalse((custom.path / default_ref["path"]).exists())
+        self.assertEqual(git(self.repo, "merge-base", BRANCH, "docs/decisions", check=False).returncode, 1)
+        custom.unmount()
+        self.assertTrue(self.store().status()["mounted"])
+        self.assertEqual(git(self.repo, "status", "--porcelain").stdout, "")
+
+    def test_custom_branch_remote_adoption_and_sync(self):
+        remote = self.remote()
+        custom = Store(self.repo, "docs/decisions", ".decisions")
+        custom.mount()
+        (custom.path / "choice.md").write_text("first")
+        custom.commit("first")
+        custom.push()
+        clone = self.clone(remote)
+        other = Store(clone, "docs/decisions", ".choices")
+        other.mount()
+        self.assertEqual(other.reference("choice.md")["commit"], custom.status()["commit"])
+        (custom.path / "choice.md").write_text("second")
+        custom.commit("second")
+        custom.push()
+        other.sync()
+        self.assertEqual((other.path / "choice.md").read_text(), "second")
+        self.assertNotEqual(git(self.repo, "show-ref", "--verify", "--quiet", REF, check=False).returncode, 0)
+
+    def test_invalid_configuration_and_shared_history_refused(self):
+        for branch, mount in (("main", ".source-docs"), ("bad..branch", ".docs"),
+                              ("--bad", ".docs"), ("docs/new", "../outside"),
+                              ("docs/new", ".git"), ("docs/new", "nested/docs"),
+                              ("docs/new", "glob*")):
+            with self.subTest(branch=branch, mount=mount), self.assertRaises(StoreError):
+                Store(self.repo, branch, mount).mount()
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.source_head)
+        self.assertFalse((self.repo / ".source-docs").exists())
+
+    def test_cli_custom_mount(self):
+        result = subprocess.run([sys.executable, "-m", "git_docstore", "--repo", str(self.repo),
+                                 "--branch", "docs/notes", "--mount-path", ".notes", "mount"],
+                                cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["branch"], "docs/notes")
+        self.assertEqual(report["path"], str(self.repo / ".notes"))
+
 
 if __name__ == "__main__":
     unittest.main()

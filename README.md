@@ -1,8 +1,11 @@
 # Git Docstore
 
-開発文書の正本をGitに置く、小さな独立CLIのプロトタイプです。
-ソースとは独立した`docs/store`ブランチを、同じリポジトリの`.docs-store/`へ
-worktreeとして取り出します。文書の形式はMarkdown・YAMLなど自由です。
+**文書用の孤立ブランチ（orphan branch）と、そのworktreeマウントを管理するCLI**です。
+ソースと祖先コミットを共有しない文書履歴を作成・再利用し、必要なときだけ取り出します。
+文書の種類・形式・フォルダ構成は利用側が決めます。Markdown・YAMLなど自由です。
+
+既定値はブランチ`docs/store`、マウント先`.docs-store/`です。
+別のブランチとマウント先を指定すれば、同じリポジトリで複数の文書置き場を持てます。
 
 Python 3.12以上とGitが必要です。Pythonの実行時依存は標準ライブラリだけです。
 既存harnessのインストール・設定・社内レジストリは必要ありません。
@@ -66,6 +69,25 @@ SHAは同じGitリポジトリ内のcommitを識別するもので、リポジ�
 文書履歴をリモートへ送っていなければ、他のcloneからそのSHAは読めません。
 他の文書ブランチや過去の提案のcommitも明示指定で読めます。
 
+## 文書置き場を選ぶ
+
+`--branch`と`--mount-path`をサブコマンドの**前**に指定します。
+設定ファイルへの自動保存はせず、操作ごとに同じ組み合わせを指定します。
+
+```bash
+python3 -m git_docstore --repo /path/to/project --branch docs/decisions --mount-path .decisions mount
+python3 -m git_docstore --repo /path/to/project --branch docs/decisions --mount-path .decisions status
+python3 -m git_docstore --repo /path/to/project --branch docs/decisions --mount-path .decisions commit -m '判断を記録'
+python3 -m git_docstore --repo /path/to/project --branch docs/decisions --mount-path .decisions unmount
+```
+
+ブランチ名はGitの規則で検査します。マウント先は最初のworktree直下の
+単一ディレクトリ名です（文字・数字・`_`・`.`・`-`、日本語も可）。
+絶対パス・入れ子・`..`・`.git`・glob文字は対象外です。
+別cloneでは同じブランチを別のディレクトリ名へマウントしても構いません。
+同一ブランチを同時に複数箇所へマウントすることはGitの制約に従い拒否されます。
+既存ブランチがソースのHEADと祖先を共有する場合も、新規mountを拒否します。
+
 ## リモートと共同作業
 
 ローカルだけでも動きます。リモートを使う場合は、通常のGitで`origin`を設定します。
@@ -75,7 +97,7 @@ python3 -m git_docstore --repo /path/to/project sync
 python3 -m git_docstore --repo /path/to/project push
 ```
 
-- 初回mountでは、既存のローカル`docs/store`を優先します。
+- 初回mountでは、既存のローカルの指定ブランチを優先します。
 - ローカルにない場合、originにあればfetchして再利用します。
   originがなければ独立した空の文書履歴を作ります。
   originに接続できない場合は停止し、別の履歴を勝手に作りません。
@@ -93,10 +115,10 @@ python3 -m git_docstore --repo /path/to/project push
   既存フォルダを自動的に文書ブランチへ取り込む機能はありません。
 - 未コミット文書があればunmount・sync・pushを拒否します。
   ignoredファイルが残っていればGitの通常のworktree削除も失敗し、強制削除はしません。
-- 登録されたworktreeが別ブランチ、locked、欠損状態なら停止します。
+- 登録されたworktreeが指定と別ブランチ、locked、欠損状態なら停止します。
   分岐・提案ブランチの作成や修復は初版の対象外です。
 - ソースの`.gitignore`は編集せず、Gitローカルの`info/exclude`へ
-  `/.docs-store/`だけを追加します。これは通常のGit設定変更として残ります。
+  指定したマウント先（既定では`/.docs-store/`）だけを追加します。これは通常のGit設定変更として残ります。
 - ソース側の別worktreeから実行しても、最初のworktreeにある文書置き場を共有します。
 - unmountはworktreeだけを外します。文書ブランチとコミットは残します。
 - 共有する文書worktreeは一人ずつ編集してください。
@@ -111,10 +133,10 @@ python3 -m git_docstore --repo /path/to/project push
 ```mermaid
 flowchart LR
     User[人・エージェント] --> CLI[CLI / JSON出力]
-    CLI --> Store[文書の保管・固定参照]
+    CLI --> Store[孤立ブランチ・マウントの管理]
     Store --> Git[Git CLI]
     Git --> Source[ソースworktree]
-    Git --> Docs[docs/store + 文書worktree]
+    Git --> Docs[指定の孤立ブランチ + 文書worktree]
     Git --> Remote[任意のorigin]
 ```
 
@@ -124,6 +146,7 @@ flowchart LR
 
 スナップショット生成、Notion連携、成立判定、計画管理、inbox、UIは含みません。
 GitHubにリポジトリを作る機能もありません。
+`ref` / `read`は、文書形式を解釈しないGit参照の補助機能です。
 
 ## 開発
 

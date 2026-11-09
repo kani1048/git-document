@@ -1,7 +1,8 @@
 # Git Docstore prototype
 
-Purpose: keep development documents in Git, on an independent docs/store branch,
-mounted as .docs-store in the primary worktree. Documents are the source of truth;
+Purpose: manage document orphan branches and their worktree mounts in Git.
+Branch and mount names are selectable, defaulting to docs/store and .docs-store.
+Mount directories live directly under the primary worktree. Documents are the source of truth;
 immutable references are Git commit SHA + repository-relative document path.
 
 Scope: mount/unmount, status, commit, ref/read, explicit fast-forward-only sync and
@@ -15,7 +16,9 @@ references, remote adoption, divergence and non-fast-forward push refusal.
 User authorized local-only work and deletion of the earlier product-evidence prototype.
 Remote creation, push and draft PR are deferred.
 
-Status: local prototype complete. 13 integration tests pass, including local bare
+Status: local prototype complete. 17 integration tests pass, including multiple
+independent document stores, custom branch/mount CLI options, invalid configuration,
+shared source-history refusal, local bare
 remote adoption, fast-forward sync, divergence refusal, dirty-work protection,
 source index isolation, linked worktree entry and immutable document references.
 A separate Japanese-text demo confirmed read after unmount and unchanged source

@@ -6,8 +6,11 @@ from .store import Store, StoreError
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Keep development documents on docs/store")
+    parser = argparse.ArgumentParser(description="Manage orphan document branches and worktree mounts")
     parser.add_argument("--repo", default=".", help="any worktree in the target repository")
+    parser.add_argument("--branch", default="docs/store", help="orphan document branch (default: docs/store)")
+    parser.add_argument("--mount-path", default=".docs-store",
+                        help="directory name under the primary worktree (default: .docs-store)")
     sub = parser.add_subparsers(dest="command", required=True)
     for command in ("mount", "unmount", "status", "sync", "push"):
         sub.add_parser(command)
@@ -19,7 +22,7 @@ def main(argv=None):
     read.add_argument("path")
     args = parser.parse_args(argv)
     try:
-        store = Store(args.repo)
+        store = Store(args.repo, args.branch, args.mount_path)
         if args.command == "read":
             sys.stdout.write(store.read(args.commit, args.path))
             return 0
