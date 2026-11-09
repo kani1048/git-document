@@ -13,4 +13,10 @@ source isolation, linked worktree entry, dirty work refusal, path conflicts, sta
 references, remote adoption, divergence and non-fast-forward push refusal.
 
 User authorized local-only work and deletion of the earlier product-evidence prototype.
-Remote creation, push and draft PR are deferred. Status: implementation in progress.
+Remote creation, push and draft PR are deferred.
+
+Status: local prototype complete. 13 integration tests pass, including local bare
+remote adoption, fast-forward sync, divergence refusal, dirty-work protection,
+source index isolation, linked worktree entry and immutable document references.
+A separate Japanese-text demo confirmed read after unmount and unchanged source
+status. README documents commands, boundaries and unsupported features.
