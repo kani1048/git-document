@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "git-docstore"
+version = "0.1.0"
+description = "Development documents on a separate Git branch and worktree"
+requires-python = ">=3.12"
+
+[project.scripts]
+git-docstore = "git_docstore.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["git_docstore*"]
