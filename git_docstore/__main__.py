@@ -14,6 +14,10 @@ def main(argv=None):
         sub.add_parser(command)
     commit = sub.add_parser("commit", help="stage and commit all document changes only")
     commit.add_argument("-m", "--message", required=True)
+    sub.add_parser("branch", help="derive and mount a proposal from the selected document branch").add_argument("name")
+    diff = sub.add_parser("diff", help="show committed proposal changes since the merge base")
+    diff.add_argument("--base", default="docs/store")
+    sub.add_parser("merge", help="fast-forward the selected document branch to a proposal").add_argument("name")
     sub.add_parser("ref").add_argument("path")
     read = sub.add_parser("read")
     read.add_argument("commit")
@@ -28,6 +32,12 @@ def main(argv=None):
             result = store.reference(args.path)
         elif args.command == "commit":
             result = store.commit(args.message)
+        elif args.command == "branch":
+            result = store.branch_proposal(args.name)
+        elif args.command == "diff":
+            result = store.compare(args.base)
+        elif args.command == "merge":
+            result = store.merge_proposal(args.name)
         else:
             result = getattr(store, args.command)()
         print(json.dumps(result, ensure_ascii=False, indent=2))

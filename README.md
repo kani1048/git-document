@@ -121,6 +121,53 @@ python3 -m git_docstore --repo /path/to/project push
 - force-push・自動rebase・resetは行いません。分岐時はGitで解決してください。
 - push後もマウントは保持します。unmountは明示操作です。
 
+## 提案ブランチで文書差分を作る
+
+`branch`は、選択した文書ブランチのコミットから提案ブランチを作成し、
+その名前から生成したディレクトリへマウントします。正本のcheckoutは変えません。
+正本はローカルに存在する必要があります。必要なら先に`mount`・`sync`してください。
+正本がマウント済みなら、未コミットの文書を保存してから派生させます。
+
+```bash
+python3 -m git_docstore --repo /path/to/project branch docs/share-spec
+# .docs-share-spec/内の文書を編集する
+python3 -m git_docstore --repo /path/to/project --branch docs/share-spec commit -m '共有仕様の変更案'
+python3 -m git_docstore --repo /path/to/project --branch docs/share-spec diff
+```
+
+`diff`はJSONの`patch`に、正本との共通祖先から提案HEADまでのコミット済み変更を返します。
+未コミット変更は含みません。現在の正本側の追加変更も含めない、Gitの三点比較に相当します。
+`merge_base`・`base_commit`・`proposal_commit`も返すため、比較対象を確認できます。
+提案と正本が未マウントでも比較できます。別の正本を使う場合は`diff --base docs/decisions`です。
+
+確認後に正本へ取り込む場合：
+
+```bash
+python3 -m git_docstore --repo /path/to/project mount
+python3 -m git_docstore --repo /path/to/project merge docs/share-spec
+```
+
+```mermaid
+flowchart LR
+    Base[docs/store] --> Branch[branch docs/share-spec]
+    Branch --> Edit[.docs-share-spec/で編集・commit]
+    Edit --> Diff[diffで文書差分を確認]
+    Diff --> Merge[正本でmerge docs/share-spec]
+    Merge --> Updated[docs/storeをfast-forward]
+```
+
+- `--branch docs/decisions branch docs/decision-proposal`のように派生元も変更できます。
+  取り込み先も`--branch docs/decisions merge docs/decision-proposal`で指定します。
+- 既存の提案を再開する場合は`--branch docs/share-spec mount`です。
+  `branch`は既存ブランチを上書きしません。
+- 派生元ブランチはメタデータとして保存しません。既定の比較先は`docs/store`なので、
+  別の正本から派生した場合は`diff --base`で明示してください。
+- 取り込み先はマウント済み・cleanが必要です。提案側もマウント済みならcleanが必要です。
+- 正本と提案が別々に進んで分岐した場合は停止します。自動rebaseや三方向mergeはしません。
+- 取り込み済みの提案ブランチとそのマウントは残します。必要なら明示的にunmountしてください。
+- `push`で提案ブランチを共有できます。PR作成・承認・マージの自動化はありません。
+  ここでの`merge`はローカルGitへの取り込みで、レビュー承認を検証する機能ではありません。
+
 ## データを保護する境界
 
 - `.docs-store/`が通常のフォルダやsymlinkなら上書きしません。
@@ -128,7 +175,7 @@ python3 -m git_docstore --repo /path/to/project push
 - 未コミット文書があればunmount・sync・pushを拒否します。
   ignoredファイルが残っていればGitの通常のworktree削除も失敗し、強制削除はしません。
 - 登録されたworktreeが指定と別ブランチ、locked、欠損状態なら停止します。
-  分岐・提案ブランチの作成や修復は初版の対象外です。
+  手動で変更されたworktreeの自動修復は対象外です。
 - ソースの`.gitignore`は編集せず、Gitローカルの`info/exclude`へ
   指定したマウント先（既定では`/.docs-store/`）だけを追加します。これは通常のGit設定変更として残ります。
 - ソース側の別worktreeから実行しても、最初のworktreeにある文書置き場を共有します。

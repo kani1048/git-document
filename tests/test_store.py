@@ -272,6 +272,102 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(first.status()["commit"], before)
         self.assertEqual((first.path / "keep.md").read_text(), "preserve")
 
+    def test_proposal_lifecycle_keeps_source_and_base_until_merge(self):
+        self.store().mount()
+        original = self.add_document()
+        created = self.store().branch_proposal("docs/share-spec")
+        proposal = Store(self.repo, "docs/share-spec")
+        self.assertEqual(created["base_commit"], original["commit"])
+        self.assertEqual((proposal.path / original["path"]).read_text(), "first\n")
+        (proposal.path / original["path"]).write_text("proposed\n")
+        proposal.commit("propose")
+        report = proposal.compare()
+        self.assertIn("+proposed", report["patch"])
+        self.assertEqual(self.store().status()["commit"], original["commit"])
+        self.assertEqual((self.store().path / original["path"]).read_text(), "first\n")
+        self.store().merge_proposal(proposal.branch)
+        self.assertEqual((self.store().path / original["path"]).read_text(), "proposed\n")
+        self.assertTrue(proposal.status()["mounted"])
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.source_head)
+
+    def test_unmounted_base_and_proposal_comparison(self):
+        self.store().mount()
+        self.add_document()
+        self.store().unmount()
+        self.store().branch_proposal("docs/review")
+        proposal = Store(self.repo, "docs/review")
+        (proposal.path / "new.md").write_text("new")
+        proposal.commit("new")
+        proposal.unmount()
+        self.assertIn("+new", proposal.compare()["patch"])
+        self.store().mount()
+        self.store().merge_proposal(proposal.branch)
+        self.assertEqual((self.store().path / "new.md").read_text(), "new")
+
+    def test_proposal_refuses_dirty_base_and_existing_branch_or_path(self):
+        self.store().mount()
+        self.add_document()
+        (self.store().path / "dirty.md").write_text("dirty")
+        with self.assertRaises(StoreError):
+            self.store().branch_proposal("docs/review")
+        self.store().commit("save")
+        self.store().branch_proposal("docs/review")
+        with self.assertRaises(StoreError):
+            self.store().branch_proposal("docs/review")
+        occupied = self.repo / ".docs-occupied"
+        occupied.mkdir()
+        with self.assertRaises(StoreError):
+            self.store().branch_proposal("docs/occupied")
+        self.assertNotEqual(git(self.repo, "show-ref", "--verify", "--quiet",
+                                "refs/heads/docs/occupied", check=False).returncode, 0)
+
+    def test_diverged_proposal_and_dirty_merge_leave_both_trees_intact(self):
+        self.store().mount()
+        self.add_document()
+        self.store().branch_proposal("docs/review")
+        proposal = Store(self.repo, "docs/review")
+        (proposal.path / "proposal.md").write_text("proposal")
+        with self.assertRaises(StoreError):
+            self.store().merge_proposal(proposal.branch)
+        proposal.commit("proposal")
+        self.add_document("base advanced\n")
+        old_base = self.store().status()["commit"]
+        # Three-dot diff includes proposal changes, not the base's own edits.
+        self.assertNotIn("base advanced", proposal.compare()["patch"])
+        with self.assertRaises(StoreError):
+            self.store().merge_proposal(proposal.branch)
+        self.assertEqual(self.store().status()["commit"], old_base)
+        self.assertEqual((proposal.path / "proposal.md").read_text(), "proposal")
+        self.assertEqual(self.store().changes(), "")
+
+    def test_unrelated_or_source_proposals_are_rejected(self):
+        self.store().mount()
+        self.add_document()
+        unrelated = Store(self.repo, "docs/unrelated")
+        unrelated.mount()
+        for name in ("main", "docs/unrelated", BRANCH):
+            with self.subTest(name=name), self.assertRaises(StoreError):
+                self.store().merge_proposal(name)
+        with self.assertRaises(StoreError):
+            Store(self.repo, "main").branch_proposal("docs/from-source")
+
+    def test_cli_proposal_commands_and_custom_base(self):
+        def invoke(*args):
+            result = subprocess.run([sys.executable, "-m", "git_docstore", "--repo", str(self.repo), *args],
+                                    cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        invoke("--branch", "docs/decisions", "mount")
+        created = invoke("--branch", "docs/decisions", "branch", "docs/decision-proposal")
+        self.assertEqual(created["base_branch"], "docs/decisions")
+        proposal = Store(self.repo, "docs/decision-proposal")
+        (proposal.path / "choice.md").write_text("choice")
+        invoke("--branch", proposal.branch, "commit", "-m", "choice")
+        report = invoke("--branch", proposal.branch, "diff", "--base", "docs/decisions")
+        self.assertIn("+choice", report["patch"])
+        merged = invoke("--branch", "docs/decisions", "merge", proposal.branch)
+        self.assertEqual(merged["commit"], report["proposal_commit"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -175,6 +175,61 @@ class Store:
         git(self.path, "push", "origin", f"{self.ref}:{self.ref}")
         return self.status()
 
+    def document_head(self):
+        """Resolve a local document branch and reject source-related history."""
+        head = git(self.root, "rev-parse", "--verify", f"{self.ref}^{{commit}}").stdout.strip()
+        source = git(self.root, "rev-parse", "--verify", "HEAD", check=False)
+        if source.returncode == 0:
+            common = git(self.root, "merge-base", "HEAD", head, check=False)
+            if common.returncode == 0:
+                raise StoreError("document branch shares source history")
+            if common.returncode != 1:
+                raise StoreError(common.stderr.strip() or "unable to check branch isolation")
+        return head
+
+    def clean_if_mounted(self):
+        if self.mounted():
+            self.require_clean()
+        elif any(record.get("branch") == self.ref for record in worktree_records(self.root)):
+            raise StoreError("branch is mounted outside its derived path; resolve it manually")
+
+    def branch_proposal(self, name):
+        base_head = self.document_head()
+        self.clean_if_mounted()
+        proposal = Store(self.root, name)
+        # Refuse any existing branch or occupied path before making a branch.
+        if git(self.root, "show-ref", "--verify", "--quiet", proposal.ref, check=False).returncode == 0:
+            raise StoreError("proposal branch already exists; mount it to resume")
+        proposal.mounted()
+        git(self.root, "branch", proposal.branch, base_head)
+        result = proposal.mount()
+        return {**result, "base_branch": self.branch, "base_commit": base_head}
+
+    def compare(self, base_branch=BRANCH):
+        base = Store(self.root, base_branch)
+        base_head, head = base.document_head(), self.document_head()
+        if base.ref == self.ref:
+            raise StoreError("proposal and base must be different branches")
+        common = git(self.root, "merge-base", base_head, head, check=False)
+        if common.returncode:
+            raise StoreError("proposal and base must share document history")
+        ancestor = common.stdout.strip()
+        patch = git(self.root, "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+                    ancestor, head, "--").stdout
+        return {"branch": self.branch, "base_branch": base.branch,
+                "base_commit": base_head, "proposal_commit": head,
+                "merge_base": ancestor, "patch": patch}
+
+    def merge_proposal(self, name):
+        self.require_clean()
+        proposal = Store(self.root, name)
+        comparison = proposal.compare(self.branch)
+        proposal.clean_if_mounted()
+        # Pin the inspected commit. Never merge an unrelated branch or run a
+        # conflict-producing three-way merge on the canonical document tree.
+        git(self.path, "merge", "--ff-only", comparison["proposal_commit"])
+        return {**self.status(), "proposal_branch": proposal.branch}
+
     @staticmethod
     def document_path(path):
         if (not path or path.startswith("/") or "\\" in path or "\0" in path
