@@ -33,7 +33,7 @@ def worktree_records(cwd):
 
 
 class Store:
-    def __init__(self, cwd, branch=BRANCH, mount_path=DIRECTORY):
+    def __init__(self, cwd, branch=BRANCH):
         # Git lists the primary worktree first; use its registered path rather
         # than assuming a .git directory is located inside the source checkout.
         records = worktree_records(cwd)
@@ -43,9 +43,9 @@ class Store:
         if (not isinstance(branch, str) or branch.startswith("-")
                 or git(self.root, "check-ref-format", "refs/heads/" + branch, check=False).returncode):
             raise StoreError("invalid branch name")
-        if (not isinstance(mount_path, str) or not re.fullmatch(r"[\w.-]+", mount_path)
-                or mount_path in (".", "..", ".git")):
-            raise StoreError("mount path must be a single directory name under the primary worktree")
+        mount_path = "." + re.sub(r"[^\w.-]", "-", branch)
+        if mount_path == ".git":
+            raise StoreError("branch name maps to reserved mount path .git; choose another branch")
         self.branch = branch
         self.ref = "refs/heads/" + branch
         self.directory = mount_path
@@ -135,7 +135,7 @@ class Store:
             if common.returncode != 1:
                 raise StoreError(common.stderr.strip() or "unable to check branch isolation")
         git(self.root, "worktree", "add", str(self.path), self.branch)
-        return Store(self.root, self.branch, self.directory).status()
+        return Store(self.root, self.branch).status()
 
     def status(self):
         mounted = self.mounted()

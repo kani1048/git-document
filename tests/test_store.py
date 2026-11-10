@@ -209,7 +209,7 @@ class StoreTests(unittest.TestCase):
     def test_multiple_orphan_stores_are_independent(self):
         self.store().mount()
         default_ref = self.add_document()
-        custom = Store(self.repo, "docs/decisions", ".decisions")
+        custom = Store(self.repo, "docs/decisions")
         custom.mount()
         (custom.path / "choice.md").write_text("decision")
         custom.commit("record decision")
@@ -223,13 +223,13 @@ class StoreTests(unittest.TestCase):
 
     def test_custom_branch_remote_adoption_and_sync(self):
         remote = self.remote()
-        custom = Store(self.repo, "docs/decisions", ".decisions")
+        custom = Store(self.repo, "docs/decisions")
         custom.mount()
         (custom.path / "choice.md").write_text("first")
         custom.commit("first")
         custom.push()
         clone = self.clone(remote)
-        other = Store(clone, "docs/decisions", ".choices")
+        other = Store(clone, "docs/decisions")
         other.mount()
         self.assertEqual(other.reference("choice.md")["commit"], custom.status()["commit"])
         (custom.path / "choice.md").write_text("second")
@@ -240,23 +240,37 @@ class StoreTests(unittest.TestCase):
         self.assertNotEqual(git(self.repo, "show-ref", "--verify", "--quiet", REF, check=False).returncode, 0)
 
     def test_invalid_configuration_and_shared_history_refused(self):
-        for branch, mount in (("main", ".source-docs"), ("bad..branch", ".docs"),
-                              ("--bad", ".docs"), ("docs/new", "../outside"),
-                              ("docs/new", ".git"), ("docs/new", "nested/docs"),
-                              ("docs/new", "glob*")):
-            with self.subTest(branch=branch, mount=mount), self.assertRaises(StoreError):
-                Store(self.repo, branch, mount).mount()
+        for branch in ("main", "bad..branch", "--bad", "docs/../outside", "git", "docs/*"):
+            with self.subTest(branch=branch), self.assertRaises(StoreError):
+                Store(self.repo, branch).mount()
         self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.source_head)
-        self.assertFalse((self.repo / ".source-docs").exists())
+        self.assertFalse((self.repo / ".main").exists())
 
     def test_cli_custom_mount(self):
         result = subprocess.run([sys.executable, "-m", "git_docstore", "--repo", str(self.repo),
-                                 "--branch", "docs/notes", "--mount-path", ".notes", "mount"],
+                                 "--branch", "docs/notes", "mount"],
                                 cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["branch"], "docs/notes")
-        self.assertEqual(report["path"], str(self.repo / ".notes"))
+        self.assertEqual(report["path"], str(self.repo / ".docs-notes"))
+
+    def test_branch_derived_mount_paths_and_collision_protection(self):
+        for branch, directory in (("docs/store", ".docs-store"),
+                                  ("docs/team/notes", ".docs-team-notes"),
+                                  ("文書/判断", ".文書-判断"),
+                                  ("docs/release#1", ".docs-release-1")):
+            with self.subTest(branch=branch):
+                self.assertEqual(Store(self.repo, branch).path, self.repo / directory)
+        first = Store(self.repo, "docs/notes")
+        first.mount()
+        (first.path / "keep.md").write_text("preserve")
+        first.commit("keep")
+        before = first.status()["commit"]
+        with self.assertRaises(StoreError):
+            Store(self.repo, "docs-notes").mount()
+        self.assertEqual(first.status()["commit"], before)
+        self.assertEqual((first.path / "keep.md").read_text(), "preserve")
 
 
 if __name__ == "__main__":

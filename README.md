@@ -5,7 +5,8 @@
 文書の種類・形式・フォルダ構成は利用側が決めます。Markdown・YAMLなど自由です。
 
 既定値はブランチ`docs/store`、マウント先`.docs-store/`です。
-別のブランチとマウント先を指定すれば、同じリポジトリで複数の文書置き場を持てます。
+`--branch`で上書きすると、マウント先もブランチ名から自動生成されます。
+同じリポジトリで複数の文書置き場を持てます。
 
 Python 3.12以上とGitが必要です。Pythonの実行時依存は標準ライブラリだけです。
 既存harnessのインストール・設定・社内レジストリは必要ありません。
@@ -71,20 +72,31 @@ SHAは同じGitリポジトリ内のcommitを識別するもので、リポジ�
 
 ## 文書置き場を選ぶ
 
-`--branch`と`--mount-path`をサブコマンドの**前**に指定します。
-設定ファイルへの自動保存はせず、操作ごとに同じ組み合わせを指定します。
+`--branch`をサブコマンドの**前**に指定します。
+設定ファイルへの自動保存はせず、操作ごとに同じブランチを指定します。
+マウント先を個別に上書きするオプションはありません。
 
 ```bash
-python3 -m git_docstore --repo /path/to/project --branch docs/decisions --mount-path .decisions mount
-python3 -m git_docstore --repo /path/to/project --branch docs/decisions --mount-path .decisions status
-python3 -m git_docstore --repo /path/to/project --branch docs/decisions --mount-path .decisions commit -m '判断を記録'
-python3 -m git_docstore --repo /path/to/project --branch docs/decisions --mount-path .decisions unmount
+python3 -m git_docstore --repo /path/to/project --branch docs/decisions mount
+python3 -m git_docstore --repo /path/to/project --branch docs/decisions status
+python3 -m git_docstore --repo /path/to/project --branch docs/decisions commit -m '判断を記録'
+python3 -m git_docstore --repo /path/to/project --branch docs/decisions unmount
 ```
 
-ブランチ名はGitの規則で検査します。マウント先は最初のworktree直下の
-単一ディレクトリ名です（文字・数字・`_`・`.`・`-`、日本語も可）。
-絶対パス・入れ子・`..`・`.git`・glob文字は対象外です。
-別cloneでは同じブランチを別のディレクトリ名へマウントしても構いません。
+ブランチ名はGitの規則で検査します。マウント先はブランチ名の先頭に`.`を付け、
+`/`など文字・数字・`_`・`.`・`-`以外の各文字を`-`へ置き換えて生成します。
+日本語は維持します。最初のworktree直下に取り出し、入れ子にはしません。
+
+| ブランチ | マウント先 |
+| --- | --- |
+| `docs/store`（既定） | `.docs-store/` |
+| `docs/decisions` | `.docs-decisions/` |
+| `docs/team/notes` | `.docs-team-notes/` |
+
+`git`は`.git`になるため拒否します。異なるブランチが同じ名前に変換される場合
+（`docs/notes`と`docs-notes`など）、既に別ブランチがマウントされていれば停止します。
+未マウントなら、その場所は指定ブランチの取り出しに再利用できます。
+過去の別名マウントを自動で移動・削除する処理はありません。
 同一ブランチを同時に複数箇所へマウントすることはGitの制約に従い拒否されます。
 既存ブランチがソースのHEADと祖先を共有する場合も、新規mountを拒否します。
 
