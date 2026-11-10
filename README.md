@@ -1,4 +1,4 @@
-# Git Docstore
+# Git Docmount
 
 **文書用の孤立ブランチ（orphan branch）と、そのworktreeマウントを管理するCLI**です。
 ソースと祖先コミットを共有しない文書履歴を作成・再利用し、必要なときだけ取り出します。
@@ -18,7 +18,7 @@ Python 3.12以上とGitが必要です。Pythonの実行時依存は標準ライ
 Gitの`user.name`・`user.email`を設定しておいてください。
 
 ```bash
-python3 -m git_docstore --repo /path/to/project mount
+python3 -m git_docmount --repo /path/to/project mount
 ```
 
 対象プロジェクトの`.docs-store/`に、通常のファイルとして文書を書きます。
@@ -34,10 +34,10 @@ python3 -m git_docstore --repo /path/to/project mount
 以下もこのツールのリポジトリルートから実行します。
 
 ```bash
-python3 -m git_docstore --repo /path/to/project status
-python3 -m git_docstore --repo /path/to/project commit -m '要件を記録する'
-python3 -m git_docstore --repo /path/to/project ref requirements/example.md
-python3 -m git_docstore --repo /path/to/project unmount
+python3 -m git_docmount --repo /path/to/project status
+python3 -m git_docmount --repo /path/to/project commit -m '要件を記録する'
+python3 -m git_docmount --repo /path/to/project ref requirements/example.md
+python3 -m git_docmount --repo /path/to/project unmount
 ```
 
 `commit`は**文書worktree内の全変更をstageしてcommit**します。ソース側のindexには触れません。
@@ -60,7 +60,7 @@ Git hooks・署名・ignore・改行変換など通常のGit設定は有効で�
 文書のsymlinkやディレクトリへの参照は対象外です。
 
 ```bash
-python3 -m git_docstore --repo /path/to/project read FULL_COMMIT_SHA requirements/example.md
+python3 -m git_docmount --repo /path/to/project read FULL_COMMIT_SHA requirements/example.md
 ```
 
 `read`は固定したコミットのUTF-8テキストを標準出力へ返します。
@@ -77,10 +77,10 @@ SHAは同じGitリポジトリ内のcommitを識別するもので、リポジ�
 マウント先を個別に上書きするオプションはありません。
 
 ```bash
-python3 -m git_docstore --repo /path/to/project --branch docs/decisions mount
-python3 -m git_docstore --repo /path/to/project --branch docs/decisions status
-python3 -m git_docstore --repo /path/to/project --branch docs/decisions commit -m '判断を記録'
-python3 -m git_docstore --repo /path/to/project --branch docs/decisions unmount
+python3 -m git_docmount --repo /path/to/project --branch docs/decisions mount
+python3 -m git_docmount --repo /path/to/project --branch docs/decisions status
+python3 -m git_docmount --repo /path/to/project --branch docs/decisions commit -m '判断を記録'
+python3 -m git_docmount --repo /path/to/project --branch docs/decisions unmount
 ```
 
 ブランチ名はGitの規則で検査します。マウント先はブランチ名の先頭に`.`を付け、
@@ -105,8 +105,8 @@ python3 -m git_docstore --repo /path/to/project --branch docs/decisions unmount
 ローカルだけでも動きます。リモートを使う場合は、通常のGitで`origin`を設定します。
 
 ```bash
-python3 -m git_docstore --repo /path/to/project sync
-python3 -m git_docstore --repo /path/to/project push
+python3 -m git_docmount --repo /path/to/project sync
+python3 -m git_docmount --repo /path/to/project push
 ```
 
 - 初回mountでは、既存のローカルの指定ブランチを優先します。
@@ -129,10 +129,10 @@ python3 -m git_docstore --repo /path/to/project push
 正本がマウント済みなら、未コミットの文書を保存してから派生させます。
 
 ```bash
-python3 -m git_docstore --repo /path/to/project branch docs/share-spec
+python3 -m git_docmount --repo /path/to/project branch docs/share-spec
 # .docs-share-spec/内の文書を編集する
-python3 -m git_docstore --repo /path/to/project --branch docs/share-spec commit -m '共有仕様の変更案'
-python3 -m git_docstore --repo /path/to/project --branch docs/share-spec diff
+python3 -m git_docmount --repo /path/to/project --branch docs/share-spec commit -m '共有仕様の変更案'
+python3 -m git_docmount --repo /path/to/project --branch docs/share-spec diff
 ```
 
 `diff`はJSONの`patch`に、正本との共通祖先から提案HEADまでのコミット済み変更を返します。
@@ -143,8 +143,8 @@ python3 -m git_docstore --repo /path/to/project --branch docs/share-spec diff
 確認後に正本へ取り込む場合：
 
 ```bash
-python3 -m git_docstore --repo /path/to/project mount
-python3 -m git_docstore --repo /path/to/project merge docs/share-spec
+python3 -m git_docmount --repo /path/to/project mount
+python3 -m git_docmount --repo /path/to/project merge docs/share-spec
 ```
 
 ```mermaid
@@ -199,7 +199,7 @@ flowchart LR
     Git --> Remote[任意のorigin]
 ```
 
-`git_docstore/__main__.py`はCLI、`store.py`は保管手順とGitアダプターです。
+`git_docmount/__main__.py`はCLI、`store.py`は保管手順とGitアダプターです。
 現時点では小さな2層構成です。将来の要件形式・依存検証・証拠評価を
 このパッケージへ詰め込まず、固定参照を利用する別ツールとして接続できます。
 
@@ -216,4 +216,4 @@ python3 -m unittest discover -s tests -v
 一時Gitリポジトリとローカルbare remoteを使った統合テストです。
 実データやGitHubへアクセスしません。
 必要なら`python3 -m pip install -e .`でCLIをインストールできます。
-その場合は任意の場所から`git-docstore --repo /path/to/project mount`と呼べます。
+その場合は任意の場所から`git-docmount --repo /path/to/project mount`と呼べます。

@@ -1,4 +1,4 @@
-# git-docstore
+# git-docmount
 
 Python 3.12+, Git CLI, standard library only. Run integration tests with
 `python3 -m unittest discover -s tests -v`.

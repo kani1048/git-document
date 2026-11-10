@@ -1,4 +1,4 @@
-# Git Docstore prototype
+# Git Docmount prototype
 
 Purpose: manage document orphan branches and their worktree mounts in Git.
 The branch is selectable (default docs/store); the mount name is derived from it

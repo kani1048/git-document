@@ -6,14 +6,14 @@ import sys
 import tempfile
 import unittest
 
-from git_docstore.store import BRANCH, REF, Store, StoreError, git
+from git_docmount.store import BRANCH, REF, Store, StoreError, git
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class StoreTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="git-docstore-test-")
+        self.temp = tempfile.TemporaryDirectory(prefix="git-docmount-test-")
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
         self.repo = self.base / "source"
@@ -193,7 +193,7 @@ class StoreTests(unittest.TestCase):
 
     def test_cli_json_and_errors(self):
         def invoke(*args):
-            return subprocess.run([sys.executable, "-m", "git_docstore", "--repo", str(self.repo), *args],
+            return subprocess.run([sys.executable, "-m", "git_docmount", "--repo", str(self.repo), *args],
                                   cwd=ROOT, capture_output=True, text=True)
         result = invoke("mount")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -247,7 +247,7 @@ class StoreTests(unittest.TestCase):
         self.assertFalse((self.repo / ".main").exists())
 
     def test_cli_custom_mount(self):
-        result = subprocess.run([sys.executable, "-m", "git_docstore", "--repo", str(self.repo),
+        result = subprocess.run([sys.executable, "-m", "git_docmount", "--repo", str(self.repo),
                                  "--branch", "docs/notes", "mount"],
                                 cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -353,7 +353,7 @@ class StoreTests(unittest.TestCase):
 
     def test_cli_proposal_commands_and_custom_base(self):
         def invoke(*args):
-            result = subprocess.run([sys.executable, "-m", "git_docstore", "--repo", str(self.repo), *args],
+            result = subprocess.run([sys.executable, "-m", "git_docmount", "--repo", str(self.repo), *args],
                                     cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             return json.loads(result.stdout)

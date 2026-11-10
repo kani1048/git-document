@@ -3,13 +3,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "git-docstore"
+name = "git-docmount"
 version = "0.1.0"
 description = "Manage orphan document branches and worktree mounts"
 requires-python = ">=3.12"
 
 [project.scripts]
-git-docstore = "git_docstore.__main__:main"
+git-docmount = "git_docmount.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["git_docstore*"]
+include = ["git_docmount*"]
