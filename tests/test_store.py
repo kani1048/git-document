@@ -1,0 +1,373 @@
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+from git_docmount.store import BRANCH, REF, Store, StoreError, git
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class StoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="git-docmount-test-")
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.repo = self.base / "source"
+        self.repo.mkdir()
+        git(self.repo, "init", "-b", "main")
+        git(self.repo, "config", "user.name", "Test")
+        git(self.repo, "config", "user.email", "test@example.invalid")
+        (self.repo / "app.txt").write_text("source\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "source")
+        self.source_head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+    def store(self):
+        return Store(self.repo)
+
+    def add_document(self, content="first\n", path="requirements/example.md"):
+        store = self.store()
+        target = store.path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+        store.commit("document")
+        return self.store().reference(path)
+
+    def remote(self):
+        remote = self.base / "remote.git"
+        remote.mkdir()
+        git(remote, "init", "--bare")
+        git(self.repo, "remote", "add", "origin", str(remote))
+        git(self.repo, "push", "origin", "main")
+        return remote
+
+    def clone(self, remote):
+        clone = self.base / "clone"
+        git(self.base, "clone", "-b", "main", str(remote), str(clone))
+        git(clone, "config", "user.name", "Test")
+        git(clone, "config", "user.email", "test@example.invalid")
+        return clone
+
+    def test_independent_history_and_source_isolation(self):
+        (self.repo / "app.txt").write_text("source work in progress\n")
+        git(self.repo, "add", "app.txt")
+        before = git(self.repo, "diff", "--cached").stdout
+        self.store().mount()
+        self.add_document()
+        self.assertEqual(git(self.repo, "diff", "--cached").stdout, before)
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.source_head)
+        self.assertFalse((self.repo / ".docs-store/app.txt").exists())
+        self.assertEqual(git(self.repo, "merge-base", "main", BRANCH, check=False).returncode, 1)
+        self.assertNotIn(".docs-store", git(self.repo, "status", "--porcelain").stdout)
+
+    def test_mount_idempotent_unmount_preserves_history(self):
+        self.store().mount()
+        self.assertTrue(self.store().mount()["mounted"])
+        reference = self.add_document()
+        self.store().unmount()
+        self.assertFalse(self.store().status()["mounted"])
+        self.assertEqual(self.store().read(reference["commit"], reference["path"]), "first\n")
+        self.store().mount()
+        self.assertEqual((self.store().path / reference["path"]).read_text(), "first\n")
+
+    def test_dirty_unmount_refuses_without_data_loss(self):
+        self.store().mount()
+        (self.store().path / "untracked.md").write_text("keep me")
+        with self.assertRaises(StoreError):
+            self.store().unmount()
+        self.assertEqual((self.store().path / "untracked.md").read_text(), "keep me")
+
+    def test_path_conflict_and_symlink_are_preserved(self):
+        path = self.repo / ".docs-store"
+        path.mkdir()
+        (path / "existing.md").write_text("keep")
+        with self.assertRaises(StoreError):
+            self.store().mount()
+        self.assertEqual((path / "existing.md").read_text(), "keep")
+        (path / "existing.md").unlink()
+        path.rmdir()
+        path.symlink_to(self.base, target_is_directory=True)
+        with self.assertRaises(StoreError):
+            self.store().mount()
+
+    def test_tracked_mount_path_is_refused(self):
+        path = self.repo / ".docs-store"
+        path.mkdir()
+        (path / "keep.md").write_text("keep")
+        git(self.repo, "add", ".")
+        with self.assertRaises(StoreError):
+            self.store().mount()
+
+    def test_entry_from_linked_source_worktree(self):
+        linked = self.base / "feature"
+        git(self.repo, "worktree", "add", "-b", "feature", str(linked))
+        store = Store(linked)
+        self.assertEqual(store.root, self.repo)
+        store.mount()
+        self.assertTrue(self.store().path.is_dir())
+        self.assertFalse((linked / ".docs-store").exists())
+
+    def test_reference_is_stable_and_rejects_uncommitted_file(self):
+        self.store().mount()
+        first = self.add_document()
+        (self.store().path / first["path"]).write_text("second\n")
+        with self.assertRaises(StoreError):
+            self.store().reference(first["path"])
+        self.store().commit("second version")
+        second = self.store().reference(first["path"])
+        self.assertNotEqual(first["commit"], second["commit"])
+        self.assertEqual(self.store().read(first["commit"], first["path"]), "first\n")
+
+    def test_bad_paths_symlinks_and_noncommit_refs(self):
+        self.store().mount()
+        reference = self.add_document(path="文書/space name.md")
+        self.assertEqual(self.store().read(reference["commit"], reference["path"]), "first\n")
+        for path in ("../app.txt", "/etc/passwd", "a/../b", ".git/config", "a//b"):
+            with self.subTest(path=path), self.assertRaises(StoreError):
+                self.store().read(reference["commit"], path)
+        (self.store().path / "link.md").symlink_to("requirements/example.md")
+        self.store().commit("link")
+        head = self.store().status()["commit"]
+        with self.assertRaises(StoreError):
+            self.store().read(head, "link.md")
+        with self.assertRaises(StoreError):
+            self.store().read("main", reference["path"])
+        tree = git(self.repo, "rev-parse", "docs/store^{tree}").stdout.strip()
+        with self.assertRaises(StoreError):
+            self.store().read(tree, reference["path"])
+
+    def test_remote_adoption_and_fast_forward(self):
+        remote = self.remote()
+        self.store().mount()
+        reference = self.add_document()
+        self.store().push()
+        clone = self.clone(remote)
+        Store(clone).mount()
+        self.assertEqual(Store(clone).status()["commit"], reference["commit"])
+        self.add_document("new\n")
+        self.store().push()
+        Store(clone).sync()
+        self.assertEqual((Store(clone).path / reference["path"]).read_text(), "new\n")
+
+    def test_divergence_and_nonfastforward_push_do_not_destroy_work(self):
+        remote = self.remote()
+        self.store().mount()
+        self.add_document()
+        self.store().push()
+        clone = self.clone(remote)
+        Store(clone).mount()
+        (Store(clone).path / "local.md").write_text("local")
+        Store(clone).commit("local")
+        local_head = Store(clone).status()["commit"]
+        self.add_document("remote advance\n")
+        self.store().push()
+        with self.assertRaises(StoreError):
+            Store(clone).sync()
+        with self.assertRaises(StoreError):
+            Store(clone).push()
+        self.assertEqual(Store(clone).status()["commit"], local_head)
+        self.assertEqual((Store(clone).path / "local.md").read_text(), "local")
+
+    def test_missing_remote_and_connection_failure(self):
+        self.store().mount()
+        with self.assertRaises(StoreError):
+            self.store().sync()
+        with self.assertRaises(StoreError):
+            self.store().push()
+        self.store().unmount()
+        git(self.repo, "branch", "-D", BRANCH)
+        git(self.repo, "remote", "add", "origin", str(self.base / "missing.git"))
+        with self.assertRaises(StoreError):
+            self.store().mount()
+        self.assertNotEqual(git(self.repo, "show-ref", "--verify", "--quiet", REF, check=False).returncode, 0)
+
+    def test_wrong_branch_is_not_committed(self):
+        self.store().mount()
+        git(self.store().path, "switch", "-c", "docs/proposal")
+        with self.assertRaises(StoreError):
+            self.store().commit("must fail")
+
+    def test_cli_json_and_errors(self):
+        def invoke(*args):
+            return subprocess.run([sys.executable, "-m", "git_docmount", "--repo", str(self.repo), *args],
+                                  cwd=ROOT, capture_output=True, text=True)
+        result = invoke("mount")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["mounted"])
+        result = invoke("ref", "../bad")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("error", json.loads(result.stderr))
+        reference = self.add_document()
+        result = invoke("read", reference["commit"], reference["path"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "first\n")
+
+    def test_multiple_orphan_stores_are_independent(self):
+        self.store().mount()
+        default_ref = self.add_document()
+        custom = Store(self.repo, "docs/decisions")
+        custom.mount()
+        (custom.path / "choice.md").write_text("decision")
+        custom.commit("record decision")
+        self.assertEqual(custom.status()["branch"], "docs/decisions")
+        self.assertEqual(self.store().status()["commit"], default_ref["commit"])
+        self.assertFalse((custom.path / default_ref["path"]).exists())
+        self.assertEqual(git(self.repo, "merge-base", BRANCH, "docs/decisions", check=False).returncode, 1)
+        custom.unmount()
+        self.assertTrue(self.store().status()["mounted"])
+        self.assertEqual(git(self.repo, "status", "--porcelain").stdout, "")
+
+    def test_custom_branch_remote_adoption_and_sync(self):
+        remote = self.remote()
+        custom = Store(self.repo, "docs/decisions")
+        custom.mount()
+        (custom.path / "choice.md").write_text("first")
+        custom.commit("first")
+        custom.push()
+        clone = self.clone(remote)
+        other = Store(clone, "docs/decisions")
+        other.mount()
+        self.assertEqual(other.reference("choice.md")["commit"], custom.status()["commit"])
+        (custom.path / "choice.md").write_text("second")
+        custom.commit("second")
+        custom.push()
+        other.sync()
+        self.assertEqual((other.path / "choice.md").read_text(), "second")
+        self.assertNotEqual(git(self.repo, "show-ref", "--verify", "--quiet", REF, check=False).returncode, 0)
+
+    def test_invalid_configuration_and_shared_history_refused(self):
+        for branch in ("main", "bad..branch", "--bad", "docs/../outside", "git", "docs/*"):
+            with self.subTest(branch=branch), self.assertRaises(StoreError):
+                Store(self.repo, branch).mount()
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.source_head)
+        self.assertFalse((self.repo / ".main").exists())
+
+    def test_cli_custom_mount(self):
+        result = subprocess.run([sys.executable, "-m", "git_docmount", "--repo", str(self.repo),
+                                 "--branch", "docs/notes", "mount"],
+                                cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["branch"], "docs/notes")
+        self.assertEqual(report["path"], str(self.repo / ".docs-notes"))
+
+    def test_branch_derived_mount_paths_and_collision_protection(self):
+        for branch, directory in (("docs/store", ".docs-store"),
+                                  ("docs/team/notes", ".docs-team-notes"),
+                                  ("文書/判断", ".文書-判断"),
+                                  ("docs/release#1", ".docs-release-1")):
+            with self.subTest(branch=branch):
+                self.assertEqual(Store(self.repo, branch).path, self.repo / directory)
+        first = Store(self.repo, "docs/notes")
+        first.mount()
+        (first.path / "keep.md").write_text("preserve")
+        first.commit("keep")
+        before = first.status()["commit"]
+        with self.assertRaises(StoreError):
+            Store(self.repo, "docs-notes").mount()
+        self.assertEqual(first.status()["commit"], before)
+        self.assertEqual((first.path / "keep.md").read_text(), "preserve")
+
+    def test_proposal_lifecycle_keeps_source_and_base_until_merge(self):
+        self.store().mount()
+        original = self.add_document()
+        created = self.store().branch_proposal("docs/share-spec")
+        proposal = Store(self.repo, "docs/share-spec")
+        self.assertEqual(created["base_commit"], original["commit"])
+        self.assertEqual((proposal.path / original["path"]).read_text(), "first\n")
+        (proposal.path / original["path"]).write_text("proposed\n")
+        proposal.commit("propose")
+        report = proposal.compare()
+        self.assertIn("+proposed", report["patch"])
+        self.assertEqual(self.store().status()["commit"], original["commit"])
+        self.assertEqual((self.store().path / original["path"]).read_text(), "first\n")
+        self.store().merge_proposal(proposal.branch)
+        self.assertEqual((self.store().path / original["path"]).read_text(), "proposed\n")
+        self.assertTrue(proposal.status()["mounted"])
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.source_head)
+
+    def test_unmounted_base_and_proposal_comparison(self):
+        self.store().mount()
+        self.add_document()
+        self.store().unmount()
+        self.store().branch_proposal("docs/review")
+        proposal = Store(self.repo, "docs/review")
+        (proposal.path / "new.md").write_text("new")
+        proposal.commit("new")
+        proposal.unmount()
+        self.assertIn("+new", proposal.compare()["patch"])
+        self.store().mount()
+        self.store().merge_proposal(proposal.branch)
+        self.assertEqual((self.store().path / "new.md").read_text(), "new")
+
+    def test_proposal_refuses_dirty_base_and_existing_branch_or_path(self):
+        self.store().mount()
+        self.add_document()
+        (self.store().path / "dirty.md").write_text("dirty")
+        with self.assertRaises(StoreError):
+            self.store().branch_proposal("docs/review")
+        self.store().commit("save")
+        self.store().branch_proposal("docs/review")
+        with self.assertRaises(StoreError):
+            self.store().branch_proposal("docs/review")
+        occupied = self.repo / ".docs-occupied"
+        occupied.mkdir()
+        with self.assertRaises(StoreError):
+            self.store().branch_proposal("docs/occupied")
+        self.assertNotEqual(git(self.repo, "show-ref", "--verify", "--quiet",
+                                "refs/heads/docs/occupied", check=False).returncode, 0)
+
+    def test_diverged_proposal_and_dirty_merge_leave_both_trees_intact(self):
+        self.store().mount()
+        self.add_document()
+        self.store().branch_proposal("docs/review")
+        proposal = Store(self.repo, "docs/review")
+        (proposal.path / "proposal.md").write_text("proposal")
+        with self.assertRaises(StoreError):
+            self.store().merge_proposal(proposal.branch)
+        proposal.commit("proposal")
+        self.add_document("base advanced\n")
+        old_base = self.store().status()["commit"]
+        # Three-dot diff includes proposal changes, not the base's own edits.
+        self.assertNotIn("base advanced", proposal.compare()["patch"])
+        with self.assertRaises(StoreError):
+            self.store().merge_proposal(proposal.branch)
+        self.assertEqual(self.store().status()["commit"], old_base)
+        self.assertEqual((proposal.path / "proposal.md").read_text(), "proposal")
+        self.assertEqual(self.store().changes(), "")
+
+    def test_unrelated_or_source_proposals_are_rejected(self):
+        self.store().mount()
+        self.add_document()
+        unrelated = Store(self.repo, "docs/unrelated")
+        unrelated.mount()
+        for name in ("main", "docs/unrelated", BRANCH):
+            with self.subTest(name=name), self.assertRaises(StoreError):
+                self.store().merge_proposal(name)
+        with self.assertRaises(StoreError):
+            Store(self.repo, "main").branch_proposal("docs/from-source")
+
+    def test_cli_proposal_commands_and_custom_base(self):
+        def invoke(*args):
+            result = subprocess.run([sys.executable, "-m", "git_docmount", "--repo", str(self.repo), *args],
+                                    cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        invoke("--branch", "docs/decisions", "mount")
+        created = invoke("--branch", "docs/decisions", "branch", "docs/decision-proposal")
+        self.assertEqual(created["base_branch"], "docs/decisions")
+        proposal = Store(self.repo, "docs/decision-proposal")
+        (proposal.path / "choice.md").write_text("choice")
+        invoke("--branch", proposal.branch, "commit", "-m", "choice")
+        report = invoke("--branch", proposal.branch, "diff", "--base", "docs/decisions")
+        self.assertIn("+choice", report["patch"])
+        merged = invoke("--branch", "docs/decisions", "merge", proposal.branch)
+        self.assertEqual(merged["commit"], report["proposal_commit"])
+
+
+if __name__ == "__main__":
+    unittest.main()
